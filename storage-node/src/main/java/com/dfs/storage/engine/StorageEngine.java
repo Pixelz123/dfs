@@ -1,22 +1,18 @@
 package com.dfs.storage.engine;
 
-
+import java.io.InputStream;
+import java.nio.ByteBuffer;
+import java.nio.channels.Channels;
+import java.nio.channels.FileChannel;
+import java.nio.channels.ReadableByteChannel;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.nio.file.StandardOpenOption;
-import java.security.MessageDigest;
 
-import org.springframework.core.io.buffer.DataBuffer;
-import org.springframework.core.io.buffer.DataBufferUtils;
 import org.springframework.stereotype.Service;
 
-import com.dfs.storage.domain.ChunkMetadata;
-
-import reactor.core.scheduler.Schedulers;
 import jakarta.annotation.PostConstruct;
-import reactor.core.publisher.Flux;
-import reactor.core.publisher.Mono;
 
 @Service
 public class StorageEngine {
@@ -27,47 +23,34 @@ public class StorageEngine {
         Files.createDirectories(Paths.get(STORAGE_DIR));
     }
 
-   public Mono<Void> writeChunk(Long chunkId, Flux<DataBuffer> dataStream){
-      Path dataPath= Paths.get(STORAGE_DIR,"chk_"+chunkId+".dat");
-      return DataBufferUtils.write(dataStream,dataPath,StandardOpenOption.CREATE,StandardOpenOption.WRITE)
-                            .then(
-                                Mono.fromRunnable(()->{
-                                    try{
-                                        generateMetaData(chunkId,dataPath);
-                                    }catch(Exception ex){
-                                        throw new RuntimeException("Bad parsing chunk");
-                                     }
-                                }).subscribeOn(Schedulers.boundedElastic())
-                            )
-                            .then();
-   }
+    public void writeData(Long chunkId, ReadableByteChannel tcpByteChannel, long payloadSize) {
+        Path dataPath = Paths.get(STORAGE_DIR, "blk_" + chunkId + ".dat");
+        try {
+            FileChannel diskChannel = FileChannel.open(dataPath,
+                    StandardOpenOption.CREATE,
+                    StandardOpenOption.WRITE,
+                    StandardOpenOption.TRUNCATE_EXISTING);
 
-    private void generateMetaData(Long chunkId, Path dataPath) throws Exception{
-         MessageDigest digest = MessageDigest.getInstance("SHA-256");
-         byte[] fileBytes = Files.readAllBytes(dataPath);
-         byte[] hash = digest.digest(fileBytes);
-         StringBuilder hex = new StringBuilder();
-         for (byte b: hash){
-            hex.append(String.format("%02x",b));
-         }
-         ChunkMetadata metadata = new ChunkMetadata(
-              chunkId,
-              Files.size(dataPath),
-              hex.toString(),
-              System.currentTimeMillis()
-         );
-         metadata.saveToDisk(STORAGE_DIR);
+            long bytesTransferred = 0;
+
+            while (bytesTransferred < payloadSize) {
+                long transferredByte = diskChannel.transferFrom(
+                        tcpByteChannel,
+                        bytesTransferred,
+                        payloadSize - bytesTransferred);
+                if (transferredByte <= 0)
+                    throw new RuntimeException("TCP Transafer error !!!");
+
+                bytesTransferred += transferredByte;
+
+            }
+        } catch (Exception ex) {
+            throw new RuntimeException("TCP Socket failure !!!");
+        }
     }
 
-    public Mono<Void> deleteChunk(Long chunkId){
-        return Mono.fromRunnable(()->{
-               try{
-                Files.delete(Paths.get(STORAGE_DIR,"chk_"+chunkId+".meta"));
-                Files.delete(Paths.get(STORAGE_DIR,"chk_"+chunkId+".dat"));
-               }catch(Exception e){
-                throw new RuntimeException("Could not delete chunk ");
-               }
-        });
+    public void deleteChunk(Long chunkId) throws Exception {
+        Files.deleteIfExists(Paths.get("blk_" + chunkId + ".dat"));
+        Files.deleteIfExists(Paths.get("blk_" + chunkId + ".meta"));
     }
-
 }

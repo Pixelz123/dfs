@@ -1,0 +1,8 @@
+server:
+ port : 5001
+spring: 
+  threads:
+    virtual:
+     enabled: true
+  application: 
+   name: storage-node
